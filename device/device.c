@@ -35,6 +35,7 @@ cen64_cold static int device_debug_spin(struct cen64_device *device);
 cen64_cold static void device_schedule_threads(unsigned num_threads, cen64_thread **threads);
 cen64_flatten cen64_hot static int device_multithread_spin(struct cen64_device *device);
 cen64_flatten cen64_hot static int device_spin(struct cen64_device *device);
+cen64_flatten cen64_hot static int device_unthreaded_spin(struct cen64_device *device);
 
 cen64_flatten cen64_hot static CEN64_THREAD_RETURN_TYPE run_rcp_thread(void *);
 cen64_flatten cen64_hot static CEN64_THREAD_RETURN_TYPE run_vr4300_thread(void *);
@@ -159,7 +160,8 @@ void device_run(struct cen64_device *device) {
     device_multithread_spin(device);
 
   else
-    device_spin(device);
+    //device_spin(device);
+    device_unthreaded_spin(device);
 
   // TODO: Restore host registers that were pinned.
   fpu_set_state(saved_fpu_state);
@@ -174,6 +176,7 @@ CEN64_THREAD_RETURN_TYPE run_rcp_thread(void *opaque) {
   while (likely(device->running)) {
     unsigned i, j;
 
+#if 0
     for (i = 0; i < 6250 / 5; i++) {
       for (j = 0; j < 5; j++) {
         rsp_cycle(&device->rsp);
@@ -182,6 +185,15 @@ CEN64_THREAD_RETURN_TYPE run_rcp_thread(void *opaque) {
 
       rsp_cycle(&device->rsp);
     }
+#else
+    for (i = 0; i < (6250 / 5) * (5+1); i++) {
+    //for (i = 0; i < (6250 / 5) * 3; i++) {
+      rsp_cycle(&device->rsp);
+    }
+    for (i = 0; i < (6250 / 5) * (5); i++) {
+      vi_cycle(&device->vi);
+    }
+#endif
 
     // Sync up with the VR4300 and RDP threads.
     cen64_mutex_lock(&device->sync_mutex);
@@ -229,6 +241,7 @@ CEN64_THREAD_RETURN_TYPE run_vr4300_thread(void *opaque) {
   while (likely(device->running)) {
     unsigned i, j;
 
+#if 0
     for (i = 0; i < 6250 / 2; i++) {
       for (j = 0; j < 2; j++) {
         ai_cycle(&device->ai);
@@ -238,6 +251,17 @@ CEN64_THREAD_RETURN_TYPE run_vr4300_thread(void *opaque) {
       for (j = 0; j < 3; j++)
         vr4300_cycle(&device->vr4300);
     }
+#else
+    for (i = 0; i < (6250 / 2) * 2; i++) {
+        ai_cycle(&device->ai);
+    }
+    for (i = 0; i < (6250 / 2) * 2; i++) {
+        pi_cycle(&device->pi);
+    }
+    for (i = 0; i < (6250 / 2) * 3; i++) {
+        vr4300_cycle(&device->vr4300);
+    }
+#endif
 
     // Sync up with the RCP thread.
     cen64_mutex_lock(&device->sync_mutex);
@@ -332,6 +356,7 @@ int device_spin(struct cen64_device *device) {
   while (likely(device->running)) {
     unsigned i, j;
 
+#if 1
     for (i = 0; i < 6250 / 10; i++) {
       for (j = 0; j < 10; j++) {
         vr4300_cycle(&device->vr4300);
@@ -360,6 +385,36 @@ int device_spin(struct cen64_device *device) {
 
     device->rsp.rdp_has_pending_dl--;
   }
+#else
+    for (i = 0; i < (6250 / 10) * (10+5); i++) {
+      vr4300_cycle(&device->vr4300);
+    }
+    for (i = 0; i < (6250 / 10) * (10+2); i++) {
+      rsp_cycle(&device->rsp);
+    }
+    for (i = 0; i < (6250 / 10) * (10); i++) {
+      ai_cycle(&device->ai);
+    }
+    for (i = 0; i < (6250 / 10) * (10); i++) {
+      pi_cycle(&device->pi);
+    }
+    for (i = 0; i < (6250 / 10) * (10); i++) {
+      vi_cycle(&device->vi);
+    }
+
+    // Sync up with the RDP thread.
+    if (!device->rsp.rdp_has_pending_dl) {
+      cen64_mutex_lock(&device->rdp.rdp_mutex);
+
+      while (device->rdp.remaining_length)
+        cen64_cv_wait(&device->rdp.rdp_sync_signal, &device->rdp.rdp_mutex);
+
+      cen64_mutex_unlock(&device->rdp.rdp_mutex);
+    }
+
+    device->rsp.rdp_has_pending_dl--;
+  }
+#endif
 
   return 0;
 }
@@ -395,6 +450,34 @@ int device_debug_spin(struct cen64_device *device) {
     for (i = 0; i < 5; i++) {
       vr4300_cycle(&device->vr4300);
       vr4300_cycle_extra(&device->vr4300, &vr4300_stats);
+    }
+  }
+
+  return 0;
+}
+
+int device_unthreaded_spin(struct cen64_device *device) {
+  if (setjmp(device->bus.unwind_data))
+    return 1;
+
+  while (likely(device->running)) {
+    unsigned i;
+
+    for (i = 0; i < (6250/10) * (10+5); i++) {
+      vr4300_cycle(&device->vr4300);
+    }
+    for (i = 0; i < (6250/10) * (10+2); i++) {
+    //for (i = 0; i < (6250/10) * (6); i++) {
+      rsp_cycle(&device->rsp);
+    }
+    for (i = 0; i < (6250/10) * (10); i++) {
+      ai_cycle(&device->ai);
+    }
+    for (i = 0; i < (6250/10) * (10); i++) {
+      pi_cycle(&device->pi);
+    }
+    for (i = 0; i < (6250/10) * (10); i++) {
+      vi_cycle(&device->vi);
     }
   }
 
